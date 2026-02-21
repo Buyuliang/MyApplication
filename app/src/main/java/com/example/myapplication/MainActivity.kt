@@ -442,19 +442,26 @@ private fun getOutputFileInSameDirectory(
         val sourceFile = getFileFromUri(context, sourceUri)
         if (sourceFile != null) {
             android.util.Log.d("MainActivity", "找到源文件: ${sourceFile.absolutePath}")
-            val parentDir = sourceFile.parentFile
-            if (parentDir != null && parentDir.exists()) {
-                android.util.Log.d("MainActivity", "源文件目录: ${parentDir.absolutePath}, 可写: ${parentDir.canWrite()}")
-                val outputFile = File(parentDir, outputFileName)
-                
-                // 尝试写入测试（更可靠的权限检查）
-                try {
-                    if (parentDir.canWrite() || parentDir.setWritable(true)) {
+            val filePath = sourceFile.absolutePath
+            
+            // 检查是否是临时/合成路径（Photo Picker等创建的临时路径）
+            if (filePath.contains(".transforms") || filePath.contains("synthetic") || 
+                filePath.contains("picker_get_content")) {
+                android.util.Log.w("MainActivity", "检测到临时/合成路径，跳过直接写入: $filePath")
+                // 临时路径不可写，继续使用MediaStore API
+            } else {
+                val parentDir = sourceFile.parentFile
+                if (parentDir != null && parentDir.exists()) {
+                    android.util.Log.d("MainActivity", "源文件目录: ${parentDir.absolutePath}, 可写: ${parentDir.canWrite()}")
+                    
+                    // 检查目录是否可写
+                    if (parentDir.canWrite()) {
+                        val outputFile = File(parentDir, outputFileName)
                         android.util.Log.d("MainActivity", "可以使用源文件目录: ${outputFile.absolutePath}")
                         return outputFile
+                    } else {
+                        android.util.Log.w("MainActivity", "源文件目录不可写: ${parentDir.absolutePath}")
                     }
-                } catch (e: Exception) {
-                    android.util.Log.w("MainActivity", "无法写入源文件目录", e)
                 }
             }
         }
@@ -480,13 +487,23 @@ private fun getOutputFileInSameDirectory(
                         val dataPath = cursor.getString(dataIndex)
                         if (!dataPath.isNullOrEmpty()) {
                             android.util.Log.d("MainActivity", "MediaStore DATA路径: $dataPath")
-                            val sourceFileObj = File(dataPath)
-                            if (sourceFileObj.exists()) {
-                                val parentDir = sourceFileObj.parentFile
-                                if (parentDir != null && parentDir.exists()) {
-                                    val outputFile = File(parentDir, outputFileName)
-                                    android.util.Log.d("MainActivity", "使用DATA路径: ${outputFile.absolutePath}")
-                                    return outputFile
+                            
+                            // 检查是否是临时/合成路径
+                            if (dataPath.contains(".transforms") || dataPath.contains("synthetic") || 
+                                dataPath.contains("picker_get_content")) {
+                                android.util.Log.w("MainActivity", "检测到临时/合成路径，跳过直接写入: $dataPath")
+                                // 继续使用MediaStore API保存
+                            } else {
+                                val sourceFileObj = File(dataPath)
+                                if (sourceFileObj.exists()) {
+                                    val parentDir = sourceFileObj.parentFile
+                                    if (parentDir != null && parentDir.exists() && parentDir.canWrite()) {
+                                        val outputFile = File(parentDir, outputFileName)
+                                        android.util.Log.d("MainActivity", "使用DATA路径: ${outputFile.absolutePath}")
+                                        return outputFile
+                                    } else {
+                                        android.util.Log.w("MainActivity", "DATA路径目录不可写: ${parentDir?.absolutePath}")
+                                    }
                                 }
                             }
                         }
@@ -526,26 +543,28 @@ private fun copyToSourceDirectory(
         // 方法1: 尝试获取源文件目录并直接复制（适用于Android 9及以下）
         val sourceFileObj = getFileFromUri(context, sourceUri)
         if (sourceFileObj != null) {
-            val parentDir = sourceFileObj.parentFile
-            if (parentDir != null && parentDir.exists()) {
-                val outputFile = File(parentDir, outputFileName)
-                android.util.Log.d("MainActivity", "尝试复制到: ${outputFile.absolutePath}")
-                
-                try {
-                    // 尝试设置目录可写
-                    if (!parentDir.canWrite()) {
-                        parentDir.setWritable(true)
-                    }
+            val filePath = sourceFileObj.absolutePath
+            
+            // 检查是否是临时/合成路径
+            if (filePath.contains(".transforms") || filePath.contains("synthetic") || 
+                filePath.contains("picker_get_content")) {
+                android.util.Log.w("MainActivity", "检测到临时/合成路径，跳过直接复制: $filePath")
+                // 继续使用MediaStore API
+            } else {
+                val parentDir = sourceFileObj.parentFile
+                if (parentDir != null && parentDir.exists() && parentDir.canWrite()) {
+                    val outputFile = File(parentDir, outputFileName)
+                    android.util.Log.d("MainActivity", "尝试复制到: ${outputFile.absolutePath}")
                     
-                    if (parentDir.canWrite() || parentDir.setWritable(true)) {
+                    try {
                         sourceFile.copyTo(outputFile, overwrite = true)
                         if (outputFile.exists()) {
                             android.util.Log.d("MainActivity", "成功复制到源文件目录: ${outputFile.absolutePath}")
                             return outputFile
                         }
+                    } catch (e: Exception) {
+                        android.util.Log.w("MainActivity", "直接复制失败，尝试MediaStore API", e)
                     }
-                } catch (e: Exception) {
-                    android.util.Log.w("MainActivity", "直接复制失败，尝试MediaStore API", e)
                 }
             }
         }
@@ -579,20 +598,34 @@ private fun copyToSourceDirectory(
                         if (dataIndex >= 0) {
                             val dataPath = cursor.getString(dataIndex)
                             if (!dataPath.isNullOrEmpty()) {
-                                val file = File(dataPath)
-                                val parent = file.parent
-                                if (parent != null) {
-                                    // 从完整路径提取相对路径
-                                    val externalDir = Environment.getExternalStorageDirectory()
-                                    if (externalDir != null && parent.startsWith(externalDir.absolutePath)) {
-                                        relativePath = parent.substring(externalDir.absolutePath.length + 1)
-                                        if (!relativePath.endsWith("/")) {
-                                            relativePath += "/"
+                                // 检查是否是临时/合成路径
+                                if (dataPath.contains(".transforms") || dataPath.contains("synthetic") || 
+                                    dataPath.contains("picker_get_content")) {
+                                    android.util.Log.w("MainActivity", "检测到临时/合成路径，使用默认相对路径: $dataPath")
+                                    // 对于临时路径，使用默认的Music目录
+                                    relativePath = Environment.DIRECTORY_MUSIC + "/"
+                                } else {
+                                    val file = File(dataPath)
+                                    val parent = file.parent
+                                    if (parent != null) {
+                                        // 从完整路径提取相对路径
+                                        val externalDir = Environment.getExternalStorageDirectory()
+                                        if (externalDir != null && parent.startsWith(externalDir.absolutePath)) {
+                                            relativePath = parent.substring(externalDir.absolutePath.length + 1)
+                                            if (!relativePath.endsWith("/")) {
+                                                relativePath += "/"
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                    
+                    // 如果仍然没有相对路径，使用默认的Music目录
+                    if (relativePath.isNullOrEmpty()) {
+                        android.util.Log.w("MainActivity", "无法获取源文件的相对路径，使用默认Music目录")
+                        relativePath = Environment.DIRECTORY_MUSIC + "/"
                     }
                     
                     if (!relativePath.isNullOrEmpty()) {
